@@ -1,0 +1,84 @@
+# Reusable check: every commit on a PR is by the allowed identity, and no
+# AI attribution footer appears in its commits, title, description or in any
+# human comment or review. Posts the result as the commit status
+# "author-check" on the PR's head commit, so comment events can block a
+# merge too (rulesets require that status from GitHub Actions).
+name: author-check
+
+on:
+  workflow_call:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const NAME = 'Tom White';
+            const EMAIL = 'tom@thomaswhite.me';
+            // Non-AI bots and GitHub's own web-flow identity are left as they are
+            const BOT_EMAILS = new Set([
+              '49699333+dependabot[bot]@users.noreply.github.com',
+              '41898282+github-actions[bot]@users.noreply.github.com',
+              'noreply@github.com',
+            ]);
+            const FOOTERS = [
+              [/^\s*co-authored-by:/im, 'a Co-authored-by line'],
+              [/^\s*claude-session:/im, 'a Claude-Session line'],
+              [/generated (with|by) \[claude\s+code\]\(/i, 'a "Generated with Claude Code" footer'],
+              [/claude\.ai\/code\/session_/i, 'a Claude session link'],
+            ];
+
+            const { owner, repo } = context.repo;
+            const number = context.payload.pull_request?.number ?? context.payload.issue?.number;
+            if (!number) {
+              core.info('Not a pull request event: nothing to check.');
+              return;
+            }
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number });
+            const problems = [];
+
+            const scan = (text, where) => {
+              for (const [pattern, what] of FOOTERS) {
+                if (pattern.test(text || '')) problems.push(`${where} contains ${what}`);
+              }
+            };
+            const isBot = (user) => user?.type === 'Bot';
+            const identityOk = (person) =>
+              BOT_EMAILS.has((person.email || '').toLowerCase()) ||
+              (person.email === EMAIL && person.name === NAME);
+
+            const commits = await github.paginate(github.rest.pulls.listCommits, { owner, repo, pull_number: number, per_page: 100 });
+            for (const c of commits) {
+              const short = c.sha.slice(0, 7);
+              for (const role of ['author', 'committer']) {
+                const p = c.commit[role];
+                if (!identityOk(p)) problems.push(`commit ${short} ${role} is "${p.name} <${p.email}>"`);
+              }
+              scan(c.commit.message, `commit ${short} message`);
+            }
+
+            scan(pr.title, 'PR title');
+            scan(pr.body, 'PR description');
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 });
+            for (const c of comments) if (!isBot(c.user)) scan(c.body, `comment by ${c.user.login} (${c.html_url})`);
+            const reviewComments = await github.paginate(github.rest.pulls.listReviewComments, { owner, repo, pull_number: number, per_page: 100 });
+            for (const c of reviewComments) if (!isBot(c.user)) scan(c.body, `review comment by ${c.user.login} (${c.html_url})`);
+            const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: number, per_page: 100 });
+            for (const r of reviews) if (!isBot(r.user)) scan(r.body, `review by ${r.user.login} (${r.html_url})`);
+
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const description = problems.length
+              ? `${problems.length} problem(s): ${problems[0]}`.slice(0, 140)
+              : `${commits.length} commit(s) and all text are clean`;
+            await github.rest.repos.createCommitStatus({
+              owner, repo, sha: pr.head.sha, context: 'author-check',
+              state: problems.length ? 'failure' : 'success', description, target_url: runUrl,
+            });
+            await core.summary
+              .addHeading(problems.length ? 'author-check failed' : 'author-check passed')
+              .addList(problems.length ? problems : ['No problems found.'])
+              .write();
+            if (problems.length) core.setFailed(problems.join('\n'));
