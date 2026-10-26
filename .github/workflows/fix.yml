@@ -1,0 +1,61 @@
+# Fixes what the author check fails on a PR (see fix.py). Started by a
+# "/author-check fix" comment from the repo owner on the PR, through the
+# caller (with that repo's own token), or on demand (with FIX_TOKEN):
+#   gh workflow run fix.yml -R ThomasWCode/author-check -f repo=NAME -f pr=N
+name: author-check fix
+
+on:
+  workflow_call:
+    secrets:
+      FIX_TOKEN:
+        required: false
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'Repo name'
+        required: true
+      pr:
+        description: 'PR number'
+        required: true
+      dry_run:
+        description: 'Report only, change nothing'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  statuses: write
+
+jobs:
+  fix:
+    # From a comment: a new one by the repo owner only
+    if: github.event_name == 'workflow_dispatch' || (github.event.action == 'created' && github.event.comment.author_association == 'OWNER')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ThomasWCode/author-check
+          persist-credentials: false
+      - name: Fix
+        env:
+          GH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && secrets.FIX_TOKEN || github.token }}
+          REPO: ${{ github.repository_owner }}/${{ inputs.repo || github.event.repository.name }}
+          PR: ${{ inputs.pr || github.event.issue.number }}
+          TRIGGER: ${{ github.event.comment.id }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "::error::FIX_TOKEN secret is not set"; exit 1; fi
+          args=(--repo "$REPO" --pr "$PR")
+          if [ -n "$TRIGGER" ]; then args+=(--trigger "$TRIGGER"); fi
+          if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
+          python3 fix.py "${args[@]}"
+
+  # Pushes and edits made with a repo's own token start no workflows, so the
+  # check runs again here; FIX_TOKEN's start it as usual
+  recheck:
+    needs: fix
+    if: ${{ !cancelled() && needs.fix.result != 'skipped' && github.event_name == 'issue_comment' }}
+    uses: ThomasWCode/author-check/.github/workflows/check.yml@main
