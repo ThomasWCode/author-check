@@ -35,4 +35,4 @@ jobs:
       pull-requests: write
       issues: write
       statuses: write
-    uses: ThomasWCode/author-check/.github/workflows/fix.yml@main
+    uses: ThomasWCode/author-check/.github/workflows/fix.yml@add-fix
