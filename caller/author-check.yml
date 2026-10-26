@@ -24,7 +24,11 @@ concurrency:
 
 jobs:
   check:
-    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    # Not for a "/author-check fix" comment: the fix runs the check itself once it is done
+    if: >-
+      (github.event_name != 'issue_comment' || github.event.issue.pull_request) &&
+      !(github.event_name == 'issue_comment' && github.event.action == 'created' &&
+      startsWith(github.event.comment.body, '/author-check fix') && github.event.comment.author_association == 'OWNER')
     uses: ThomasWCode/author-check/.github/workflows/check.yml@main
   fix:
     if: >-

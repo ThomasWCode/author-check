@@ -22,7 +22,7 @@ It reports anything else and leaves it alone: a footer in the PR title or in som
 
 Start it either way:
 
-- **On the PR:** comment `/author-check fix` (only the repo owner's comments count). It reacts 👀, then answers on the PR. This needs the repo's caller to be the current one from [`caller/`](caller/author-check.yml).
+- **On the PR:** comment `/author-check fix` (only the repo owner's comments count). It reacts 👀, then answers on the PR. This needs the repo's caller to be the current one from [`caller/`](caller/author-check.yml). From Git Bash on Windows, post it with `MSYS_NO_PATHCONV=1 gh pr comment N --body "/author-check fix"`: without that, Git Bash turns the leading `/` into a Windows path and the comment doesn't trigger anything.
 - **On demand:**
 
   ```sh
