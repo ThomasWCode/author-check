@@ -11,6 +11,12 @@ It posts the result as the commit status `author-check` on the PR's head commit,
 
 Copy [`caller/author-check.yml`](caller/author-check.yml) to `.github/workflows/author-check.yml` in a repository, then add the ruleset. The caller's `fix` job needs [`fix.yml`](.github/workflows/fix.yml) on this repo's `main`: GitHub loads every reusable workflow a caller names, even for jobs that are skipped, so without it the whole caller fails to start.
 
+repo-guard adds the caller to new repos but leaves an existing one as it is. After changing [`caller/author-check.yml`](caller/author-check.yml), merge that first (with anything it names already on `main`), then open an update PR in every repo and merge those:
+
+```sh
+gh workflow run guard.yml -R ThomasWCode/repo-guard -f update_callers=true
+```
+
 ## Fixing a failed check
 
 The fix run ([`fix.py`](fix.py)) repairs what the check fails, using the check's own rules:
