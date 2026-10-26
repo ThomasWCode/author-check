@@ -32,7 +32,7 @@ Start it either way:
 
   Add `-f dry_run=true` to see what it would do without changing anything. Locally, `python fix.py --repo NAME --pr N [--dry-run]` does the same with your `gh` sign-in (Python 3, git and the GitHub CLI, no packages).
 
-A comment uses the repo's own Actions token, which may not push commits that change workflow files; the run then says so and gives the on-demand command, which uses `FIX_TOKEN`.
+A comment uses the repo's own Actions token. GitHub refuses that token a push that changes workflow files, but a fix leaves every file as it was, and in testing it pushed rewritten commits that add a workflow. If GitHub ever refuses one, the run says so and gives the on-demand command, which uses `FIX_TOKEN`.
 
 After a force-push, a clone or session on that branch catches up with `git pull --rebase`, which drops the old copies of the rewritten commits and keeps any unpushed ones. Run the fix before a review round: review threads on the old commits become outdated, and replies naming a commit would name one that no longer exists.
 
