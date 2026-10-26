@@ -1,0 +1,16 @@
+# Runs fix.py's tests, which also check it can still read check.yml's rules.
+name: test
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 -m unittest -v
