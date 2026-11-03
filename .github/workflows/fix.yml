@@ -2,6 +2,8 @@
 # "/author-check fix" comment from the repo owner on the PR, through the
 # caller (with that repo's own token), or on demand (with FIX_TOKEN):
 #   gh workflow run fix.yml -R ThomasWCode/author-check -f repo=NAME -f pr=N
+# On demand it can also fix a branch with no PR, the default one included:
+#   gh workflow run fix.yml -R ThomasWCode/author-check -f repo=NAME -f branch=BRANCH
 name: author-check fix
 
 on:
@@ -15,8 +17,13 @@ on:
         description: 'Repo name'
         required: true
       pr:
-        description: 'PR number'
-        required: true
+        description: 'PR number (or give a branch)'
+        required: false
+        default: ''
+      branch:
+        description: 'Branch to fix instead of a PR (the default branch: its whole history)'
+        required: false
+        default: ''
       dry_run:
         description: 'Report only, change nothing'
         type: boolean
@@ -44,11 +51,15 @@ jobs:
           GH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && secrets.FIX_TOKEN || github.token }}
           REPO: ${{ github.repository_owner }}/${{ inputs.repo || github.event.repository.name }}
           PR: ${{ inputs.pr || github.event.issue.number }}
+          BRANCH: ${{ inputs.branch }}
           TRIGGER: ${{ github.event.comment.id }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           if [ -z "$GH_TOKEN" ]; then echo "::error::FIX_TOKEN secret is not set"; exit 1; fi
-          args=(--repo "$REPO" --pr "$PR")
+          if [ -n "$BRANCH" ] && [ -n "$PR" ]; then echo "::error::give a PR or a branch, not both"; exit 1; fi
+          if [ -n "$BRANCH" ]; then args=(--repo "$REPO" --branch "$BRANCH")
+          elif [ -n "$PR" ]; then args=(--repo "$REPO" --pr "$PR")
+          else echo "::error::give a PR or a branch"; exit 1; fi
           if [ -n "$TRIGGER" ]; then args+=(--trigger "$TRIGGER"); fi
           if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
           python3 fix.py "${args[@]}"

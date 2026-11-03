@@ -1,6 +1,7 @@
 """Fix what the author check fails on a pull request, where that is safe.
 
 usage: python fix.py --repo [OWNER/]NAME --pr N [--dry-run] [--trigger COMMENT_ID]
+       python fix.py --repo [OWNER/]NAME --branch NAME [--dry-run]
 
 Run by .github/workflows/fix.yml, from a "/author-check fix" comment on the
 PR (with that repo's own token) or on demand (with FIX_TOKEN); locally it uses
@@ -14,8 +15,14 @@ the check fails:
 Anything else (a footer in the title or in someone else's comment, commits
 on a fork) is reported. Posts what it did on the PR; exits 1 if anything is
 left to fix by hand.
+
+With --branch it fixes the commits (1) of a branch instead, with no PR: those
+not on the default branch, or on the default branch itself its whole history.
+The author-check ruleset refuses that push (the rewritten commits have no
+status), so it is turned off for the push only, which needs Administration
+(read and write).
 """
-import argparse, base64, json, os, re, subprocess, sys, tempfile
+import argparse, base64, json, os, re, subprocess, sys, tempfile, time
 
 sys.stdout.reconfigure(encoding="utf-8")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -162,12 +169,13 @@ def unparse(headers, message):
 
 
 def rewrite(git, rules, head, base):
-    """Rewrites the commits on head that are not on base so the check passes.
-    Returns (new head, what changed, what is left); new head == head if
-    nothing changed. Commits outside the PR, trees and dates are untouched."""
+    """Rewrites the commits on head that are not on base (all of them if base
+    is None) so the check passes. Returns (new head, what changed, what is
+    left); new head == head if nothing changed. Commits outside the PR, trees
+    and dates are untouched."""
     new, changed, left = {}, [], []
     allowed = f"{rules.name} <{rules.email}>".encode()
-    for sha in git("rev-list", "--reverse", "--topo-order", head, "--not", base).split():
+    for sha in git("rev-list", "--reverse", "--topo-order", head, *(["--not", base] if base else [])).split():
         short = sha[:7]
         headers, message = parse(git.run("cat-file", "commit", sha)[1])
         out, dirty = [], False
@@ -225,6 +233,32 @@ def push(git, branch, old, new):
     if "stale info" in err or "fetch first" in err or "[rejected]" in err:
         return "moved"
     return err.splitlines()[-1] if err else f"git push exited {code}"
+
+
+def push_unlocked(git, api, branch, old, new):
+    """push() to the default branch, with the author-check ruleset (which
+    refuses commits without the check's status) turned off for the push only.
+    Returns (push error or None, what is left)."""
+    still_off = ("the author-check ruleset is still turned off: turn it on in the repo's Settings > Rules > "
+                 "Rulesets (repo-guard's next run also does)")
+    rs = next((r for r in need(gh("GET", f"{api}/rulesets?includes_parents=false", paginate=True), "rulesets")
+               if r["name"] == "author-check"), None)
+    if not rs or need(gh("GET", f"{api}/rulesets/{rs['id']}"), "the author-check ruleset")["enforcement"] != "active":
+        return push(git, branch, old, new), []
+    status, _ = gh("PUT", f"{api}/rulesets/{rs['id']}", {"enforcement": "disabled"})
+    if status != 200:
+        return f"turning the author-check ruleset off failed (HTTP {status}): the token needs Administration (read and write)", []
+    try:
+        err = push(git, branch, old, new)
+    finally:
+        for wait in (0, 2, 4):
+            time.sleep(wait)
+            status, _ = gh("PUT", f"{api}/rulesets/{rs['id']}", {"enforcement": "active"})
+            if status == 200:
+                break
+        else:
+            print(f"::error::{still_off}")
+    return err, [] if status == 200 else [still_off]
 
 
 def text_targets(api, pr, number):
@@ -327,22 +361,74 @@ def fix(repo, number, dry, trigger=None, rules=None):
     return report(rules, branch, pushed, changed, left, dry), left
 
 
+def fix_branch(repo, branch, dry, rules=None):
+    """Fixes the commits on a branch, with no PR: those not on the default
+    branch, or on the default branch its whole history. Returns (report text,
+    what is left)."""
+    rules = rules or Rules()
+    api = f"repos/{repo}"
+    default = need(gh("GET", api), "the repo")["default_branch"]
+    on_default = branch == default
+    pushed = False
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        git = Git(tmp, token())
+        git("init", "-q")
+        git("remote", "add", "origin", f"https://github.com/{repo}.git")
+        git("fetch", "-q", "--no-tags", "origin", f"+refs/heads/{branch}:refs/remotes/origin/head",
+            *([] if on_default else [f"+refs/heads/{default}:refs/remotes/origin/base"]))
+        old = git("rev-parse", "refs/remotes/origin/head")
+        new, changed, left = rewrite(git, rules, old, None if on_default else "refs/remotes/origin/base")
+        if new != old and dry and on_default:
+            changed.append("would turn the author-check ruleset off for the push, then on again")
+        if new != old and not dry:
+            if on_default:
+                err, l = push_unlocked(git, api, branch, old, new)
+                left += l
+            else:
+                err = push(git, branch, old, new)
+            if err == "workflows":
+                left.append("these commits change workflow files, which this token may not push: run "
+                            f"`gh workflow run fix.yml -R {OWNER}/author-check -f repo={repo.split('/')[1]} -f branch={branch}`")
+                changed.clear()
+            elif err == "moved":
+                left.append(f"{branch} moved during the fix: run it again")
+                changed.clear()
+            elif err:
+                left.append(f"pushing {branch} failed: {err}")
+                changed.clear()
+            else:
+                pushed = True
+
+    text = report(rules, branch, pushed, changed, left, dry)
+    if pushed and on_default:
+        text += (f"\nBranches made from the old `{branch}` still hold its old commits: fix each with `--branch NAME`, "
+                 f"or `/author-check fix` on its PR. Their copies come out the same as the new `{branch}`'s, so they "
+                 "drop out of the PR.\n")
+    return text, left
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--repo", required=True, help=f"[OWNER/]NAME (owner defaults to {OWNER})")
-    p.add_argument("--pr", required=True, type=int)
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--pr", type=int)
+    target.add_argument("--branch", help="fix this branch's commits, with no PR (on the default branch: its whole history)")
     p.add_argument("--dry-run", action="store_true", help="report only, change nothing")
     p.add_argument("--trigger", help="id of the comment that asked for the fix (gets a reaction)")
     a = p.parse_args()
     repo = a.repo if "/" in a.repo else f"{OWNER}/{a.repo}"
 
     try:
-        text, left = fix(repo, a.pr, a.dry_run, a.trigger)
+        if a.branch:
+            text, left = fix_branch(repo, a.branch, a.dry_run)
+        else:
+            text, left = fix(repo, a.pr, a.dry_run, a.trigger)
     except RuntimeError as e:
         text, left = f"**author-check fix** failed: {e}\n", [str(e)]
     if text is None:
         text = f"**author-check fix**: {left[0]}\n"
-    elif not a.dry_run:
+    elif not a.dry_run and a.pr:
         status, data = gh("POST", f"repos/{repo}/issues/{a.pr}/comments", {"body": text})
         if status != 200:
             print(f"posting the result failed: HTTP {status} {str(data)[:200]}")
