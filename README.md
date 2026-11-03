@@ -37,6 +37,13 @@ Start it either way:
   ```
 
   Add `-f dry_run=true` to see what it would do without changing anything. Locally, `python fix.py --repo NAME --pr N [--dry-run]` does the same with your `gh` sign-in (Python 3, git and the GitHub CLI, no packages).
+- **On a branch with no PR,** the default branch included: give `-f branch=BRANCH` (locally `--branch BRANCH`) instead of the PR. It fixes the commits only, as there is no description or comment to edit, and reports in the run instead of on a PR.
+
+  ```sh
+  gh workflow run fix.yml -R ThomasWCode/author-check -f repo=NAME -f branch=main -f dry_run=true
+  ```
+
+  On any other branch it fixes the commits that aren't on the default branch. On the default branch it fixes its whole history, from the first commit, such as one pushed before repo-guard added the check. The ruleset refuses that push, because the rewritten commits have no `author-check` status, so the fix turns the ruleset off for the push and back on straight after, even if the push fails. If turning it back on fails, the run says so and fails; repo-guard's next run turns it back on too. Every commit on the default branch gets a new hash, so branches made from the old one still hold its old commits: fix each of them (`-f branch=NAME`, or `/author-check fix` on its PR), and their copies come out the same as the new default branch's, so only their own commits are left in the PR. A clone of the default branch catches up with `git pull --rebase`.
 
 A comment uses the repo's own Actions token. GitHub refuses that token a push that changes workflow files, but a fix leaves every file as it was, and in testing it pushed rewritten commits that add a workflow. If GitHub ever refuses one, the run says so and gives the on-demand command, which uses `FIX_TOKEN`.
 
@@ -53,7 +60,7 @@ By hand:
 The on-demand run needs a fine-grained personal access token in this repository's secret `FIX_TOKEN`:
 
 - **Repository access:** All repositories.
-- **Permissions:** Contents, Workflows, Pull requests and Issues (all read and write). Metadata (read) is added automatically.
+- **Permissions:** Contents, Workflows, Pull requests and Issues (all read and write). Metadata (read) is added automatically. Fixing a default branch also needs Administration (read and write), to turn the ruleset off for the push; without it, that run reports the push as refused and changes nothing.
 - **Expiry:** a year. Once it has expired, the on-demand run fails until you make a new token and replace the secret; the comment trigger doesn't use it.
 
 ## Tests
